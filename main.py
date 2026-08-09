@@ -29,6 +29,7 @@ LATENCY_SAMPLE_SECONDS = 2
 LATENCY_HISTORY = 90
 WIFI_STATUS_REFRESH_SECONDS = 10
 NEARBY_NETWORKS_REFRESH_SECONDS = 20
+CLIPBOARD_CLEAR_SECONDS = 25  # tempo até apagar a senha copiada, como um gerenciador de senhas
 RADAR_TICK_MS = 60
 RADAR_SWEEP_DEG_PER_TICK = 3
 
@@ -100,6 +101,19 @@ TRUST_LABELS = {
     "novo": "Novo",
     "nao_verificado": "Não verificado",
 }
+
+# Portas comuns que, se abertas num dispositivo que não é este computador nem
+# o roteador, valem um alerta na nota de saúde da rede (acesso remoto ou
+# compartilhamento de arquivo exposto na rede local).
+RISKY_OPEN_PORTS = {21, 23, 139, 445, 3389}
+
+# Pesos de cada componente da nota de saúde da rede (soma 1.0 quando todos os
+# dados estão disponíveis; um componente sem dado ainda é simplesmente
+# ignorado e o restante é renormalizado).
+HEALTH_WEIGHT_SECURITY = 0.35
+HEALTH_WEIGHT_STABILITY = 0.30
+HEALTH_WEIGHT_TRUST = 0.20
+HEALTH_WEIGHT_PORTS = 0.15
 
 
 def _fmt_mbps(value):
@@ -240,6 +254,14 @@ class NetworkMonitorApp:
 
         title = ttk.Label(top, text=APP_NAME, style="Header.TLabel", font=("Segoe UI", 11, "bold"))
         title.pack(side="left")
+
+        # Nota única de saúde da rede: combina segurança do Wi-Fi, estabilidade
+        # da conexão, confiança dos dispositivos e portas arriscadas expostas
+        # num só número, sempre visível, em qualquer aba.
+        self.health_score_var = tk.StringVar(value="Saúde da rede: —")
+        self.health_score_label = ttk.Label(top, textvariable=self.health_score_var,
+                                             style="Header.TLabel", font=("Segoe UI", 9, "bold"))
+        self.health_score_label.pack(side="right")
 
         self.local_ip_var = tk.StringVar(value="Rede: detectando...")
         ttk.Label(top, textvariable=self.local_ip_var, style="Header.TLabel",
@@ -674,6 +696,7 @@ class NetworkMonitorApp:
         self.last_devices = devices
         self._apply_device_filter()
         self._draw_map(devices)
+        self._update_network_health()
         self.status_var.set(f"Última verificação: {now} — {len(devices)} dispositivo(s) encontrado(s).")
 
         if new_devices:
@@ -888,6 +911,7 @@ class NetworkMonitorApp:
     # ---------- Aba Rede Wi-Fi ----------
     def _handle_wifi_status(self, status):
         self.wifi_status = status
+        self._update_network_health()
         if not status:
             for var in self.wifi_tiles.values():
                 var.set("Sem Wi-Fi")
@@ -939,9 +963,25 @@ class NetworkMonitorApp:
 
     def _copy_password(self):
         self._ensure_password_fetched()
+        value = self._password_cache or ""
         self.root.clipboard_clear()
-        self.root.clipboard_append(self._password_cache or "")
-        self.status_var.set("Senha copiada para a área de transferência.")
+        self.root.clipboard_append(value)
+        self.status_var.set(
+            f"Senha copiada — será apagada da área de transferência em {CLIPBOARD_CLEAR_SECONDS}s."
+        )
+        self.root.after(CLIPBOARD_CLEAR_SECONDS * 1000,
+                         lambda: self._clear_clipboard_if_unchanged(value))
+
+    def _clear_clipboard_if_unchanged(self, expected_value):
+        """Limpa a área de transferência só se ela ainda tiver a senha que
+        copiamos — evita apagar por engano algo que o usuário tenha copiado
+        depois (ex.: prática comum em gerenciadores de senha)."""
+        try:
+            current = self.root.clipboard_get()
+        except tk.TclError:
+            return
+        if current == expected_value:
+            self.root.clipboard_clear()
 
     def _handle_latency(self, value):
         self.latency_history.append(value)
@@ -983,6 +1023,64 @@ class NetworkMonitorApp:
         self.health_verdict_var.set(verdict)
         self.health_verdict_label.configure(foreground=color)
         self.health_detail_var.set(detail)
+        self._update_network_health()
+
+    # ---------- Nota única de saúde da rede ----------
+    def _compute_network_health(self):
+        """Combina segurança do Wi-Fi, estabilidade da conexão, confiança dos
+        dispositivos e exposição de portas arriscadas numa única nota de 0 a
+        100 — um raio-x rápido da rede, em vez de espalhar o diagnóstico em
+        vários painéis separados. Cada componente só entra na conta quando já
+        há dado suficiente para calculá-lo; os pesos são renormalizados sobre
+        o que estiver disponível."""
+        components = []  # lista de (peso, nota 0-100)
+
+        if self.wifi_status:
+            sec_score = {"segura": 100, "fraca": 55, "aberta": 0, "quebrada": 0}.get(
+                self.wifi_status.get("security_level"))
+            if sec_score is not None:
+                components.append((HEALTH_WEIGHT_SECURITY, sec_score))
+
+        verdict, _color, _detail = self._compute_connection_health()
+        stability_score = {"BOA": 100, "OK, COM PICOS": 70, "INSTÁVEL": 40, "RUIM": 10}.get(verdict)
+        if stability_score is not None:
+            components.append((HEALTH_WEIGHT_STABILITY, stability_score))
+
+        if self.last_devices:
+            total = len(self.last_devices)
+            suspects = sum(1 for d in self.last_devices if d["mac"] in self.suspect_macs)
+            trust_score = max(0, 100 - round(suspects / total * 100))
+            components.append((HEALTH_WEIGHT_TRUST, trust_score))
+
+            risky = sum(
+                1 for d in self.last_devices if not d.get("is_local") and not d.get("is_gateway")
+                for port, _label in (d.get("open_ports") or [])
+                if port in RISKY_OPEN_PORTS
+            )
+            port_score = max(0, 100 - risky * 20)
+            components.append((HEALTH_WEIGHT_PORTS, port_score))
+
+        if not components:
+            return None, "Coletando dados…", INK_MUTED
+
+        weight_sum = sum(weight for weight, _ in components)
+        score = round(sum(weight * value for weight, value in components) / weight_sum)
+
+        if score >= 80:
+            label, color = "Boa", STATUS_GOOD
+        elif score >= 55:
+            label, color = "Atenção", STATUS_WARNING
+        else:
+            label, color = "Crítica", STATUS_CRITICAL
+        return score, label, color
+
+    def _update_network_health(self):
+        score, label, color = self._compute_network_health()
+        if score is None:
+            self.health_score_var.set(f"Saúde da rede: {label}")
+        else:
+            self.health_score_var.set(f"Saúde da rede: {score} · {label}")
+        self.health_score_label.configure(foreground=color)
 
     def _draw_latency_chart(self):
         canvas = self.latency_canvas
