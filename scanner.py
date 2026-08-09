@@ -35,6 +35,13 @@ def hosts_in_subnet(local_ip):
     return [f"{prefix}.{i}" for i in range(1, 255)]
 
 
+def _parse_ttl(ping_output):
+    """Extrai o TTL de uma saída do comando `ping` do Windows já decodificada
+    (função pura, testável sem depender do Windows)."""
+    match = re.search(r"TTL=(\d+)", ping_output, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def _ping(ip):
     try:
         result = subprocess.run(
@@ -42,8 +49,7 @@ def _ping(ip):
             capture_output=True, text=True, encoding="cp850", errors="ignore",
             timeout=2, creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        match = re.search(r"TTL=(\d+)", result.stdout, re.IGNORECASE)
-        return int(match.group(1)) if match else None
+        return _parse_ttl(result.stdout)
     except Exception:
         return None
 
@@ -120,17 +126,10 @@ def scan_ports(ips, ports=None, timeout=PORT_SCAN_TIMEOUT_S):
     return results
 
 
-def get_arp_table():
-    """Le a tabela ARP do sistema (populada apos o ping sweep) e retorna {ip: mac}."""
+def _parse_arp_table(output):
+    """Extrai {ip: mac} de uma saída de `arp -a` já decodificada (função pura,
+    testável sem depender do Windows)."""
     table = {}
-    try:
-        output = subprocess.run(
-            ["arp", "-a"], capture_output=True, text=True,
-            encoding="cp850", errors="ignore", timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        ).stdout
-    except Exception:
-        return table
     for match in re.finditer(
         r"(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})", output
     ):
@@ -139,6 +138,19 @@ def get_arp_table():
             continue
         table[ip] = match.group(2).upper()
     return table
+
+
+def get_arp_table():
+    """Le a tabela ARP do sistema (populada apos o ping sweep) e retorna {ip: mac}."""
+    try:
+        output = subprocess.run(
+            ["arp", "-a"], capture_output=True, text=True,
+            encoding="cp850", errors="ignore", timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+    except Exception:
+        return {}
+    return _parse_arp_table(output)
 
 
 def _is_real_host(ip):
@@ -278,6 +290,14 @@ def resolve_hostname(ip):
     )
 
 
+def _parse_latency_ms(ping_output):
+    """Extrai a latência (ms) de uma saída do comando `ping` do Windows já
+    decodificada — cobre tanto 'tempo=' (PT-BR) quanto 'time=' (EN) (função
+    pura, testável sem depender do Windows)."""
+    match = re.search(r"(?:tempo|time)[=<]\s*([\d.]+)\s*ms", ping_output, re.IGNORECASE)
+    return float(match.group(1)) if match else None
+
+
 def ping_latency(ip, timeout_ms=1000):
     """Faz um ping simples e retorna a latencia em ms, ou None se nao houve resposta."""
     try:
@@ -286,12 +306,9 @@ def ping_latency(ip, timeout_ms=1000):
             capture_output=True, text=True, encoding="cp850", errors="ignore",
             timeout=timeout_ms / 1000 + 1, creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        match = re.search(r"(?:tempo|time)[=<]\s*([\d.]+)\s*ms", result.stdout, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
+        return _parse_latency_ms(result.stdout)
     except Exception:
-        pass
-    return None
+        return None
 
 
 PRINTER_HINTS = ("EPSON", "CANON", "BROTHER", "IMPRESSORA", "PRINTER")
@@ -379,16 +396,10 @@ def classify_device(hostname, mac=None, is_gateway=False, is_local=False):
     return "outro" if name == "DESCONHECIDO" else "computador"
 
 
-def get_default_gateway(local_ip):
-    """Retorna o IP do roteador (gateway padrao) lendo o ipconfig do adaptador ativo."""
-    try:
-        output = subprocess.run(
-            ["ipconfig"], capture_output=True, text=True,
-            encoding="cp850", errors="ignore", timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        ).stdout
-    except Exception:
-        return None
+def _parse_gateway_from_ipconfig(output, local_ip):
+    """Extrai o IP do gateway padrão a partir de uma saída de `ipconfig` já
+    decodificada, localizando o bloco do adaptador que contém local_ip
+    (função pura, testável sem depender do Windows)."""
     for block in re.split(r"\r?\n\r?\n", output):
         if local_ip not in block:
             continue
@@ -403,6 +414,19 @@ def get_default_gateway(local_ip):
                 if match:
                     return match.group(1)
     return None
+
+
+def get_default_gateway(local_ip):
+    """Retorna o IP do roteador (gateway padrao) lendo o ipconfig do adaptador ativo."""
+    try:
+        output = subprocess.run(
+            ["ipconfig"], capture_output=True, text=True,
+            encoding="cp850", errors="ignore", timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+    except Exception:
+        return None
+    return _parse_gateway_from_ipconfig(output, local_ip)
 
 
 def scan_network(progress_callback=None):

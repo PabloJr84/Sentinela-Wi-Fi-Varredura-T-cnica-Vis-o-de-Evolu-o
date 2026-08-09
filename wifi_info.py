@@ -110,9 +110,10 @@ def classify_security(security):
     return "desconhecida", security
 
 
-def get_wifi_status():
-    """Retorna dados da rede Wi-Fi atualmente conectada, ou None se nao houver Wi-Fi ativo."""
-    fields = _parse_fields(_run_netsh(["wlan", "show", "interfaces"]))
+def _build_wifi_status(fields):
+    """Monta o dicionário de status a partir dos campos já parseados de
+    `netsh wlan show interfaces` (função pura, testável sem depender do
+    Windows). Retorna None se não houver Wi-Fi ativo."""
     ssid = fields.get("SSID")
     if not ssid:
         return None
@@ -139,6 +140,12 @@ def get_wifi_status():
     }
 
 
+def get_wifi_status():
+    """Retorna dados da rede Wi-Fi atualmente conectada, ou None se nao houver Wi-Fi ativo."""
+    fields = _parse_fields(_run_netsh(["wlan", "show", "interfaces"]))
+    return _build_wifi_status(fields)
+
+
 def _search(text, *patterns):
     for pattern in patterns:
         match = re.search(rf"{pattern}\s*:\s*(.+)", text)
@@ -156,15 +163,10 @@ def _search_paren_pct(text, *patterns):
     return None
 
 
-def get_nearby_networks():
-    """Lista as redes Wi-Fi vizinhas detectadas pela placa deste notebook, com o maximo
-    de detalhe tecnico que o Windows disponibiliza (sinal, canal, banda, seguranca,
-    criptografia, tipo de radio, estacoes conectadas, uso do canal) — apenas o que o
-    radio consegue "ouvir", sem qualquer tentativa de localizacao fisica."""
-    output = _run_netsh(["wlan", "show", "networks", "mode=bssid"])
-    if not output:
-        return []
-
+def _parse_nearby_networks(output):
+    """Extrai a lista de redes vizinhas de uma saída de
+    `netsh wlan show networks mode=bssid` já decodificada (função pura,
+    testável sem depender do Windows)."""
     networks = []
     ssid_blocks = re.split(r"\r?\nSSID\s+\d+\s*:[ \t]*", output)[1:]
     for block in ssid_blocks:
@@ -202,12 +204,31 @@ def get_nearby_networks():
     return networks
 
 
+def get_nearby_networks():
+    """Lista as redes Wi-Fi vizinhas detectadas pela placa deste notebook, com o maximo
+    de detalhe tecnico que o Windows disponibiliza (sinal, canal, banda, seguranca,
+    criptografia, tipo de radio, estacoes conectadas, uso do canal) — apenas o que o
+    radio consegue "ouvir", sem qualquer tentativa de localizacao fisica."""
+    output = _run_netsh(["wlan", "show", "networks", "mode=bssid"])
+    if not output:
+        return []
+    return _parse_nearby_networks(output)
+
+
+def _extract_key_content(output):
+    """Extrai o conteúdo da chave de uma saída de
+    `netsh wlan show profile ... key=clear` já decodificada — cobre tanto
+    'Conteúdo da Chave' (PT-BR) quanto 'Key Content' (EN) (função pura,
+    testável sem depender do Windows)."""
+    match = re.search(r"Conte.do da Chave\s*:\s*(.+)", output)
+    if not match:
+        match = re.search(r"Key Content\s*:\s*(.+)", output)
+    return match.group(1).strip() if match else None
+
+
 def get_saved_password(ssid):
     """Recupera a senha salva no Windows para um perfil Wi-Fi ja conectado neste computador."""
     if not ssid:
         return None
     output = _run_netsh(["wlan", "show", "profile", f"name={ssid}", "key=clear"])
-    match = re.search(r"Conte.do da Chave\s*:\s*(.+)", output)
-    if not match:
-        match = re.search(r"Key Content\s*:\s*(.+)", output)
-    return match.group(1).strip() if match else None
+    return _extract_key_content(output)
