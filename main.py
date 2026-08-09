@@ -18,9 +18,10 @@ from tkinter import filedialog, ttk
 
 import scanner
 import wifi_info
+from applog import APP_NAME, DATA_DIR, get_logger, log_once
 
-APP_NAME = "Sentinela Wi-Fi"
-DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
+log = get_logger()
+
 DATA_FILE = os.path.join(DATA_DIR, "dispositivos_conhecidos.json")
 NETWORK_META_FILE = os.path.join(DATA_DIR, "estado_rede.json")
 DEFAULT_INTERVAL = 30
@@ -517,6 +518,7 @@ class NetworkMonitorApp:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
+                log.exception("Arquivo de dispositivos conhecidos corrompido/ilegível — começando do zero: %s", DATA_FILE)
                 return {}
         return {}
 
@@ -526,7 +528,7 @@ class NetworkMonitorApp:
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.known_devices, f, ensure_ascii=False, indent=2)
         except OSError:
-            pass
+            log.exception("Falha ao salvar dispositivos conhecidos em %s.", DATA_FILE)
 
     def _load_network_meta(self):
         if os.path.exists(NETWORK_META_FILE):
@@ -534,6 +536,7 @@ class NetworkMonitorApp:
                 with open(NETWORK_META_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
+                log.exception("Arquivo de estado da rede corrompido/ilegível — começando do zero: %s", NETWORK_META_FILE)
                 return {}
         return {}
 
@@ -543,7 +546,7 @@ class NetworkMonitorApp:
             with open(NETWORK_META_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.network_meta, f, ensure_ascii=False, indent=2)
         except OSError:
-            pass
+            log.exception("Falha ao salvar estado da rede em %s.", NETWORK_META_FILE)
 
     # ---------- Controle de monitoramento (varredura de dispositivos) ----------
     def _toggle_monitoring(self):
@@ -577,6 +580,7 @@ class NetworkMonitorApp:
             )
             self.event_queue.put(("result", devices))
         except Exception as exc:
+            log.exception("Falha durante a varredura de rede.")
             self.event_queue.put(("status", f"Erro no scan: {exc}"))
 
     # ---------- Serviços contínuos (SSID/senha/velocidade, latência e redes vizinhas) ----------
@@ -590,6 +594,7 @@ class NetworkMonitorApp:
             try:
                 status = wifi_info.get_wifi_status()
             except Exception:
+                log_once(log, "wifi_status_loop_failed", "Falha ao consultar status do Wi-Fi.", exc_info=True)
                 status = None
             self.event_queue.put(("wifi_status", status))
             time.sleep(WIFI_STATUS_REFRESH_SECONDS)
@@ -601,6 +606,8 @@ class NetworkMonitorApp:
                 try:
                     gateway_ip = scanner.get_default_gateway(scanner.get_local_ip())
                 except Exception:
+                    log_once(log, "latency_loop_gateway_failed",
+                             "Falha ao identificar o gateway para medir latência.", exc_info=True)
                     gateway_ip = None
             latency = scanner.ping_latency(gateway_ip) if gateway_ip else None
             self.event_queue.put(("latency", latency))
@@ -613,6 +620,7 @@ class NetworkMonitorApp:
                 time.sleep(2.5)
                 networks = wifi_info.get_nearby_networks()
             except Exception:
+                log_once(log, "nearby_loop_failed", "Falha ao listar redes Wi-Fi vizinhas.", exc_info=True)
                 networks = []
             self.event_queue.put(("nearby", networks))
             time.sleep(NEARBY_NETWORKS_REFRESH_SECONDS)
@@ -804,6 +812,7 @@ class NetworkMonitorApp:
                     ])
             self.status_var.set(f"Lista exportada: {path}")
         except OSError as exc:
+            log.exception("Falha ao exportar CSV para %s.", path)
             self.status_var.set(f"Erro ao exportar CSV: {exc}")
 
     # ---------- Detecção de anomalias (possíveis invasores) ----------

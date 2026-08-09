@@ -9,6 +9,10 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from applog import get_logger
+
+log = get_logger()
+
 PING_TIMEOUT_MS = 400
 PING_WORKERS = 60
 HOSTNAME_TIMEOUT_S = 1.2
@@ -24,6 +28,7 @@ def get_local_ip():
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     except OSError:
+        log.warning("Não foi possível detectar o IP local; usando 127.0.0.1 como último recurso.")
         return "127.0.0.1"
     finally:
         s.close()
@@ -149,6 +154,7 @@ def get_arp_table():
             creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout
     except Exception:
+        log.exception("Falha ao executar/ler `arp -a` — tabela ARP ficará vazia nesta varredura.")
         return {}
     return _parse_arp_table(output)
 
@@ -332,6 +338,7 @@ def _load_oui_data():
             with open(_oui_data_path(), "r", encoding="utf-8") as f:
                 _OUI_CACHE = json.load(f)
         except (OSError, json.JSONDecodeError):
+            log.exception("Falha ao carregar oui_vendors.json — fabricantes não serão identificados.")
             _OUI_CACHE = {}
     return _OUI_CACHE
 
@@ -425,6 +432,7 @@ def get_default_gateway(local_ip):
             creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout
     except Exception:
+        log.exception("Falha ao executar/ler `ipconfig` — gateway padrão não pôde ser identificado.")
         return None
     return _parse_gateway_from_ipconfig(output, local_ip)
 

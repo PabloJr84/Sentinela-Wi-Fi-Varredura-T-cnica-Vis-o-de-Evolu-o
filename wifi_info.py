@@ -1,8 +1,13 @@
 """Informações da conexão Wi-Fi atual (SSID, sinal, velocidade, senha salva) via netsh."""
 import ctypes
+import logging
 import re
 import subprocess
 from ctypes import wintypes
+
+from applog import get_logger, log_once
+
+log = get_logger()
 
 
 class _GUID(ctypes.Structure):
@@ -35,6 +40,8 @@ def trigger_wifi_scan():
     try:
         wlanapi = ctypes.WinDLL("wlanapi.dll")
     except OSError:
+        log_once(log, "wlanapi_missing",
+                 "wlanapi.dll não encontrada — sem placa/driver Wi-Fi compatível neste computador.")
         return False
 
     handle = wintypes.HANDLE()
@@ -56,6 +63,9 @@ def trigger_wifi_scan():
         finally:
             wlanapi.WlanFreeMemory(p_iface_list)
     except Exception:
+        log_once(log, "wlan_trigger_scan_failed",
+                 "Falha ao pedir nova varredura de redes Wi-Fi vizinhas via wlanapi.dll.",
+                 level=logging.ERROR, exc_info=True)
         return False
     finally:
         wlanapi.WlanCloseHandle(handle, None)
@@ -69,6 +79,8 @@ def _run_netsh(args):
             creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout
     except Exception:
+        log_once(log, "run_netsh_failed", f"Falha ao executar `netsh {' '.join(args)}`.",
+                 level=logging.ERROR, exc_info=True)
         return ""
 
 
