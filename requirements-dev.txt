@@ -1,0 +1,5 @@
+# O app em si não tem nenhuma dependência de terceiros — roda só com a
+# biblioteca padrão do Python + Tkinter (main.py, scanner.py, wifi_info.py).
+# Este arquivo lista apenas o que é necessário para desenvolver/empacotar.
+pyinstaller>=6.10
+pytest>=8.0

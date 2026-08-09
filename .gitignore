@@ -1,0 +1,20 @@
+# Build output (gerado pelo PyInstaller — reproduzível a partir de SentinelaWiFi.spec)
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Ambiente local
+.venv/
+venv/
+
+# Dados de execução do app (o app já grava isso em %APPDATA%, nunca no repo)
+dispositivos_conhecidos.json
+estado_rede.json
+*.log
