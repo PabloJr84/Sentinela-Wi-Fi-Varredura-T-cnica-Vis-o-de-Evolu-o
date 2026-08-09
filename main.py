@@ -33,6 +33,12 @@ CLIPBOARD_CLEAR_SECONDS = 25  # tempo até apagar a senha copiada, como um geren
 RADAR_TICK_MS = 60
 RADAR_SWEEP_DEG_PER_TICK = 3
 
+GAUGE_SIZE = 46
+GAUGE_THICKNESS = 5
+GAUGE_TICK_MS = 30
+GAUGE_EASE = 0.18  # fração da diferença percorrida a cada tick da animação
+SPARKLINE_HISTORY = 30  # ~5 min de histórico nos cards de sinal/velocidade (a cada 10s)
+
 # ---------- Paleta do Radar Wi-Fi (visual monocromático inspirado em HUDs de radar) ----------
 RADAR_BG = "#050a05"
 RADAR_RING = "#1f5c2f"
@@ -86,15 +92,6 @@ DEVICE_LABELS = {
     "iot": "IoT / Casa inteligente",
     "outro": "Outro",
 }
-DEVICE_ICONS = {
-    "computador": "PC",
-    "roteador": "RT",
-    "impressora": "IMP",
-    "celular": "CEL",
-    "iot": "IOT",
-    "outro": "?",
-}
-
 TRUST_LABELS = {
     "confiavel": "Confiável",
     "suspeito": "Suspeito",
@@ -126,6 +123,96 @@ def _fmt_mbps(value):
 def _resource_path(filename):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, filename)
+
+
+# ---------- Ícones vetoriais dos dispositivos (desenhados no Canvas, sem imagens) ----------
+# Cada função recebe (canvas, x, y, s, color) — s é a "escala" (raio do nó no
+# mapa) — e desenha um glifo simples em traço monolinha, no lugar das antigas
+# siglas em texto (PC, RT, IMP...).
+
+def _icon_computador(canvas, x, y, s, color):
+    w, h = s * 0.95, s * 0.62
+    canvas.create_rectangle(x - w / 2, y - h / 2 - 3, x + w / 2, y + h / 2 - 3, outline=color, width=1.6)
+    canvas.create_line(x, y + h / 2 - 3, x, y + h / 2 + 4, fill=color, width=1.6)
+    canvas.create_line(x - w * 0.3, y + h / 2 + 4, x + w * 0.3, y + h / 2 + 4, fill=color, width=1.6)
+
+
+def _icon_roteador(canvas, x, y, s, color):
+    w, h = s * 0.9, s * 0.42
+    top = y - h * 0.1
+    canvas.create_rectangle(x - w / 2, top, x + w / 2, top + h, outline=color, width=1.6)
+    canvas.create_line(x - w * 0.22, top, x - w * 0.3, top - h * 1.5, fill=color, width=1.6)
+    canvas.create_line(x + w * 0.22, top, x + w * 0.3, top - h * 1.5, fill=color, width=1.6)
+    for dx in (-w * 0.22, 0, w * 0.22):
+        canvas.create_oval(x + dx - 1.4, top + h * 0.55 - 1.4, x + dx + 1.4, top + h * 0.55 + 1.4,
+                            outline=color, width=1.2)
+
+
+def _icon_impressora(canvas, x, y, s, color):
+    w = s * 0.85
+    canvas.create_rectangle(x - w / 2, y - s * 0.05, x + w / 2, y + s * 0.4, outline=color, width=1.6)
+    canvas.create_rectangle(x - w * 0.32, y - s * 0.42, x + w * 0.32, y - s * 0.05, outline=color, width=1.6)
+    canvas.create_line(x - w * 0.28, y + s * 0.15, x + w * 0.28, y + s * 0.15, fill=color, width=1.3)
+
+
+def _icon_celular(canvas, x, y, s, color):
+    w, h = s * 0.46, s * 0.88
+    canvas.create_rectangle(x - w / 2, y - h / 2, x + w / 2, y + h / 2, outline=color, width=1.6)
+    canvas.create_line(x - w * 0.18, y + h / 2 - 4, x + w * 0.18, y + h / 2 - 4, fill=color, width=1.6)
+
+
+def _icon_iot(canvas, x, y, s, color):
+    r = s * 0.13
+    canvas.create_oval(x - r, y - r, x + r, y + r, fill=color, outline="")
+    for radius in (s * 0.32, s * 0.5):
+        canvas.create_arc(x - radius, y - radius, x + radius, y + radius,
+                           start=35, extent=110, style="arc", outline=color, width=1.4)
+
+
+def _icon_outro(canvas, x, y, s, color):
+    canvas.create_text(x, y, text="?", fill=color, font=("Segoe UI", 10, "bold"))
+
+
+DEVICE_ICON_DRAWERS = {
+    "computador": _icon_computador,
+    "roteador": _icon_roteador,
+    "impressora": _icon_impressora,
+    "celular": _icon_celular,
+    "iot": _icon_iot,
+    "outro": _icon_outro,
+}
+
+
+# ---------- Funções puras de desenho (testáveis sem abrir uma janela) ----------
+
+def _score_to_arc_extent(score):
+    """Converte uma nota 0-100 no ângulo de varredura (graus) do arco do
+    gauge de saúde da rede. Negativo porque o Canvas do Tkinter mede ângulos
+    no sentido anti-horário a partir do eixo 3h, e o gauge preenche no
+    sentido horário a partir do topo (90°)."""
+    if score is None:
+        return 0
+    return -360 * max(0, min(100, score)) / 100
+
+
+def _sparkline_points(history, width, height, y_max=None):
+    """Calcula os pontos (x, y) em pixels de uma mini-tendência a partir de um
+    histórico com possíveis lacunas (None) — função pura, sem desenhar nada,
+    para poder ser testada sem depender de um Canvas de verdade."""
+    values = [v for v in history if v is not None]
+    if len(values) < 2:
+        return []
+    vmax = y_max if y_max is not None else (max(values) * 1.15 or 1)
+    n = len(history)
+    step_x = width / max(n - 1, 1)
+    points = []
+    for i, v in enumerate(history):
+        if v is None:
+            continue
+        x = i * step_x
+        y = height - (v / vmax) * height if vmax else height
+        points.append((x, y))
+    return points
 
 
 def _configure_style():
@@ -231,6 +318,13 @@ class NetworkMonitorApp:
         self.wifi_status = None
         self._last_ssid = None
         self._password_cache = None
+        self.signal_history = deque(maxlen=SPARKLINE_HISTORY)
+        self.speed_history = deque(maxlen=SPARKLINE_HISTORY)
+
+        self._health_gauge_current = 0.0
+        self._health_gauge_target = None
+        self._health_gauge_color = INK_MUTED
+        self._health_score_prev = None
 
         self.map_nodes = []
         self._map_tooltip_ip = None
@@ -244,6 +338,7 @@ class NetworkMonitorApp:
         self._build_ui()
         self.root.after(200, self._poll_queue)
         self.root.after(300, self._radar_tick)
+        self.root.after(300, self._gauge_tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._start_background_services()
 
@@ -257,11 +352,21 @@ class NetworkMonitorApp:
 
         # Nota única de saúde da rede: combina segurança do Wi-Fi, estabilidade
         # da conexão, confiança dos dispositivos e portas arriscadas expostas
-        # num só número, sempre visível, em qualquer aba.
-        self.health_score_var = tk.StringVar(value="Saúde da rede: —")
-        self.health_score_label = ttk.Label(top, textvariable=self.health_score_var,
+        # num gauge sempre visível, em qualquer aba, com preenchimento animado
+        # e seta de tendência em relação à última leitura.
+        health_frame = ttk.Frame(top, style="Header.TFrame")
+        health_frame.pack(side="right")
+        self.health_gauge_canvas = tk.Canvas(health_frame, width=GAUGE_SIZE, height=GAUGE_SIZE,
+                                              background=SURFACE, highlightthickness=0)
+        self.health_gauge_canvas.pack(side="right")
+        health_text = ttk.Frame(health_frame, style="Header.TFrame")
+        health_text.pack(side="right", padx=(0, 8))
+        ttk.Label(health_text, text="SAÚDE DA REDE", style="Header.TLabel",
+                  foreground=INK_MUTED, font=("Segoe UI", 7)).pack(anchor="e")
+        self.health_score_var = tk.StringVar(value="Coletando dados…")
+        self.health_score_label = ttk.Label(health_text, textvariable=self.health_score_var,
                                              style="Header.TLabel", font=("Segoe UI", 9, "bold"))
-        self.health_score_label.pack(side="right")
+        self.health_score_label.pack(anchor="e")
 
         self.local_ip_var = tk.StringVar(value="Rede: detectando...")
         ttk.Label(top, textvariable=self.local_ip_var, style="Header.TLabel",
@@ -306,7 +411,24 @@ class NetworkMonitorApp:
                   anchor="w").pack(fill="x", side="bottom")
 
     def _build_devices_tab(self, parent):
-        toolbar = ttk.Frame(parent, padding=(4, 4, 4, 0))
+        summary = ttk.Frame(parent, padding=(4, 4, 4, 0))
+        summary.pack(fill="x")
+        summary_defs = [
+            ("total", "DISPOSITIVOS"),
+            ("trusted", "CONFIÁVEIS"),
+            ("new", "NOVOS"),
+            ("suspect", "SUSPEITOS"),
+        ]
+        self.device_summary_vars = {}
+        self.device_summary_labels = {}
+        for i, (key, title) in enumerate(summary_defs):
+            summary.columnconfigure(i, weight=1)
+            frame, var, label, _sparkline = self._make_stat_tile(summary, title)
+            frame.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
+            self.device_summary_vars[key] = var
+            self.device_summary_labels[key] = label
+
+        toolbar = ttk.Frame(parent, padding=(4, 10, 4, 0))
         toolbar.pack(fill="x")
 
         ttk.Label(toolbar, text="Buscar:").pack(side="left")
@@ -404,11 +526,16 @@ class NetworkMonitorApp:
             ("speed", "VELOCIDADE"),
         ]
         self.wifi_tiles = {}
+        self.wifi_sparklines = {}
         for i, (key, title) in enumerate(tile_defs):
             tiles_frame.columnconfigure(i, weight=1)
-            frame, var = self._make_stat_tile(tiles_frame, title)
+            frame, var, _label, sparkline = self._make_stat_tile(
+                tiles_frame, title, with_sparkline=key in ("signal", "speed"))
             frame.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
             self.wifi_tiles[key] = var
+            if sparkline is not None:
+                self.wifi_sparklines[key] = sparkline
+                sparkline.bind("<Configure>", lambda e, k=key: self._draw_wifi_sparkline(k))
 
         tiles_frame2 = ttk.Frame(container)
         tiles_frame2.pack(fill="x", pady=(6, 0))
@@ -421,7 +548,7 @@ class NetworkMonitorApp:
         ]
         for i, (key, title) in enumerate(tile_defs2):
             tiles_frame2.columnconfigure(i, weight=1)
-            frame, var = self._make_stat_tile(tiles_frame2, title)
+            frame, var, _label, _sparkline = self._make_stat_tile(tiles_frame2, title)
             frame.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
             self.wifi_tiles[key] = var
 
@@ -468,12 +595,39 @@ class NetworkMonitorApp:
         ttk.Label(health_frame, textvariable=self.health_detail_var, style="CardMuted.TLabel",
                   wraplength=190, justify="left").pack(anchor="w")
 
-    def _make_stat_tile(self, parent, title):
+    def _make_stat_tile(self, parent, title, with_sparkline=False):
         frame = ttk.Frame(parent, padding=(10, 8), style="Card.TFrame")
         ttk.Label(frame, text=title, style="CardMuted.TLabel").pack(anchor="w")
         value_var = tk.StringVar(value="—")
-        ttk.Label(frame, textvariable=value_var, style="CardValue.TLabel").pack(anchor="w")
-        return frame, value_var
+        value_label = ttk.Label(frame, textvariable=value_var, style="CardValue.TLabel")
+        value_label.pack(anchor="w")
+        sparkline_canvas = None
+        if with_sparkline:
+            sparkline_canvas = tk.Canvas(frame, height=22, background=SURFACE, highlightthickness=0)
+            sparkline_canvas.pack(fill="x", pady=(6, 0))
+        return frame, value_var, value_label, sparkline_canvas
+
+    def _draw_wifi_sparkline(self, key):
+        """Redesenha a mini-tendência de um card da aba Wi-Fi (sinal ou
+        velocidade) a partir do histórico recente — dá pra ver a tendência
+        sem precisar abrir o gráfico de latência."""
+        canvas = self.wifi_sparklines.get(key)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        history, y_max = {
+            "signal": (self.signal_history, 100),
+            "speed": (self.speed_history, None),
+        }[key]
+        width = canvas.winfo_width() or 120
+        height = canvas.winfo_height() or 22
+        points = _sparkline_points(list(history), width, height, y_max=y_max)
+        if len(points) < 2:
+            return
+        flat = [c for p in points for c in p]
+        canvas.create_line(*flat, fill=ACCENT, width=1.5, capstyle="round", joinstyle="round")
+        lx, ly = points[-1]
+        canvas.create_oval(lx - 2, ly - 2, lx + 2, ly + 2, fill=ACCENT, outline="")
 
     def _legend_swatch(self, parent, color, text):
         frame = ttk.Frame(parent)
@@ -696,6 +850,7 @@ class NetworkMonitorApp:
         self.last_devices = devices
         self._apply_device_filter()
         self._draw_map(devices)
+        self._update_device_summary()
         self._update_network_health()
         self.status_var.set(f"Última verificação: {now} — {len(devices)} dispositivo(s) encontrado(s).")
 
@@ -703,6 +858,25 @@ class NetworkMonitorApp:
             self._notify_new_devices(new_devices)
         if alerts:
             self._notify_security_alerts(alerts)
+
+    def _update_device_summary(self):
+        """Atualiza os cards-resumo no topo da aba Dispositivos — total,
+        confiáveis, novos e suspeitos — para dar o panorama antes de mergulhar
+        na tabela detalhada."""
+        counts = {"total": len(self.last_devices), "trusted": 0, "new": 0, "suspect": 0}
+        status_to_key = {"confiavel": "trusted", "novo": "new", "suspeito": "suspect"}
+        for d in self.last_devices:
+            key = status_to_key.get(self._device_trust_status(d))
+            if key:
+                counts[key] += 1
+
+        for key, value in counts.items():
+            self.device_summary_vars[key].set(str(value))
+
+        self.device_summary_labels["suspect"].configure(
+            foreground=STATUS_CRITICAL if counts["suspect"] else INK_PRIMARY)
+        self.device_summary_labels["new"].configure(
+            foreground=STATUS_WARNING if counts["new"] else INK_PRIMARY)
 
     def _device_key(self, d):
         return d["mac"] if d["mac"] != "Desconhecido" else d["ip"]
@@ -916,6 +1090,10 @@ class NetworkMonitorApp:
             for var in self.wifi_tiles.values():
                 var.set("Sem Wi-Fi")
             self.adapter_var.set("")
+            self.signal_history.append(None)
+            self.speed_history.append(None)
+            self._draw_wifi_sparkline("signal")
+            self._draw_wifi_sparkline("speed")
             return
 
         if status["ssid"] != self._last_ssid:
@@ -934,6 +1112,17 @@ class NetworkMonitorApp:
         self.wifi_tiles["signal"].set(f"{status['signal_percent']}%")
         self.wifi_tiles["channel"].set(f"{status['channel']} ({status['band']})")
         self.wifi_tiles["speed"].set(f"↓{_fmt_mbps(status['rx_mbps'])} / ↑{_fmt_mbps(status['tx_mbps'])} Mbps")
+
+        try:
+            self.signal_history.append(float(status["signal_percent"]))
+        except (TypeError, ValueError):
+            self.signal_history.append(None)
+        try:
+            self.speed_history.append(float(status["rx_mbps"]))
+        except (TypeError, ValueError):
+            self.speed_history.append(None)
+        self._draw_wifi_sparkline("signal")
+        self._draw_wifi_sparkline("speed")
 
         self.wifi_tiles["bssid"].set(status.get("bssid") or "—")
         rssi = status.get("rssi")
@@ -1076,11 +1265,50 @@ class NetworkMonitorApp:
 
     def _update_network_health(self):
         score, label, color = self._compute_network_health()
-        if score is None:
-            self.health_score_var.set(f"Saúde da rede: {label}")
-        else:
-            self.health_score_var.set(f"Saúde da rede: {score} · {label}")
+
+        trend = ""
+        if score is not None and self._health_score_prev is not None and score != self._health_score_prev:
+            delta = score - self._health_score_prev
+            trend = f"  {'▲' if delta > 0 else '▼'}{abs(delta)}"
+        if score is not None:
+            self._health_score_prev = score
+
+        self.health_score_var.set(f"{label}{trend}" if score is not None else label)
         self.health_score_label.configure(foreground=color)
+
+        self._health_gauge_target = score
+        self._health_gauge_color = color if score is not None else INK_MUTED
+
+    def _gauge_tick(self):
+        """Anima o preenchimento do gauge de saúde da rede suavemente em
+        direção à nota mais recente, em vez de pular direto para o novo
+        valor — o mesmo tipo de microinteração que os medidores de atividade
+        costumam usar."""
+        target = self._health_gauge_target if self._health_gauge_target is not None else 0
+        self._health_gauge_current += (target - self._health_gauge_current) * GAUGE_EASE
+        if abs(target - self._health_gauge_current) < 0.3:
+            self._health_gauge_current = target
+        self._draw_health_gauge()
+        self.root.after(GAUGE_TICK_MS, self._gauge_tick)
+
+    def _draw_health_gauge(self):
+        canvas = getattr(self, "health_gauge_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        pad = GAUGE_THICKNESS / 2 + 1
+        x0, y0, x1, y1 = pad, pad, GAUGE_SIZE - pad, GAUGE_SIZE - pad
+        canvas.create_oval(x0, y0, x1, y1, outline=GRIDLINE, width=GAUGE_THICKNESS)
+        if self._health_gauge_target is not None:
+            extent = _score_to_arc_extent(self._health_gauge_current)
+            if extent:
+                canvas.create_arc(x0, y0, x1, y1, start=90, extent=extent,
+                                   style="arc", outline=self._health_gauge_color, width=GAUGE_THICKNESS)
+            text = str(round(self._health_gauge_current))
+        else:
+            text = "—"
+        canvas.create_text(GAUGE_SIZE / 2, GAUGE_SIZE / 2, text=text, fill=INK_PRIMARY,
+                            font=("Segoe UI", 11, "bold"))
 
     def _draw_latency_chart(self):
         canvas = self.latency_canvas
@@ -1206,8 +1434,7 @@ class NetworkMonitorApp:
                                     outline=INK_PRIMARY, width=2)
             canvas.create_oval(x - node_r, y - node_r, x + node_r, y + node_r,
                                 fill=color, outline=SURFACE, width=2)
-            canvas.create_text(x, y, text=DEVICE_ICONS.get(kind, "?"), fill="white",
-                                font=("Segoe UI", 9, "bold"))
+            DEVICE_ICON_DRAWERS.get(kind, _icon_outro)(canvas, x, y, node_r, "white")
 
             if d["hostname"] != "Desconhecido":
                 name = d["hostname"]
